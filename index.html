@@ -1,0 +1,987 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LED Ekran Simülasyonu</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #0b1020; font-family: system-ui, "Segoe UI", Roboto, Arial, sans-serif; }
+    canvas { display: block; }
+    #info {
+      position: fixed; top: 12px; left: 12px; max-width: 330px;
+      background: rgba(12, 16, 26, 0.82); color: #e6e9ef; border-radius: 10px;
+      padding: 12px 14px; font-size: 12.5px; line-height: 1.45;
+      box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35); backdrop-filter: blur(6px);
+    }
+    #info h1 { font-size: 14px; margin: 0 0 8px; font-weight: 700; letter-spacing: 0.02em; }
+    #info table { border-collapse: collapse; width: 100%; }
+    #info td { padding: 1px 0; vertical-align: top; }
+    #info td:first-child { color: #9aa3b5; padding-right: 10px; white-space: nowrap; }
+    #info td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+    #info .warn { margin-top: 8px; color: #ffcc66; }
+    #hint {
+      position: fixed; bottom: 10px; left: 12px; color: rgba(255, 255, 255, 0.75);
+      font-size: 12px; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8); pointer-events: none;
+    }
+    #toast {
+      position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%);
+      background: rgba(12, 16, 26, 0.9); color: #fff; padding: 8px 14px; border-radius: 8px;
+      font-size: 13px; opacity: 0; transition: opacity 0.3s; pointer-events: none;
+    }
+    #toast.show { opacity: 1; }
+    #drop {
+      position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+      background: rgba(20, 120, 255, 0.25); border: 4px dashed #6ab0ff; color: #fff;
+      font-size: 28px; font-weight: 700; pointer-events: none;
+    }
+    #drop.show { display: flex; }
+    @media (max-width: 700px) {
+      #info { max-width: 210px; font-size: 11px; padding: 8px 10px; }
+      #hint { display: none; }
+    }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="info"></div>
+  <div id="hint">Sol tık: döndür · Sağ tık: kaydır · Tekerlek: yakınlaştır · Görsel/video dosyasını sayfaya sürükleyip bırakabilirsiniz</div>
+  <div id="toast"></div>
+  <div id="drop">Görseli / videoyu LED ekrana bırakın</div>
+  <input type="file" id="file" accept="image/*,video/*" hidden>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+    import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+    import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+    import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+    import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+    import GUI from 'three/addons/libs/lil-gui.module.min.js';
+
+    // =====================================================================
+    // Parametreler
+    // =====================================================================
+    const params = {
+      // Ekran boyutu (metre) ve cephedeki konumu
+      width: 8,
+      height: 4,
+      posX: 0,
+      elevation: 6,
+      // Çözünürlük
+      resX: 400,
+      resY: 200,
+      pitch: 20,
+      squarePixels: true,
+      resPreset: '',
+      // İçerik
+      source: 'promo',
+      fit: 'contain',
+      marqueeText: 'HOŞ GELDİNİZ  •  YENİ SEZON ÜRÜNLERİ MAĞAZAMIZDA  •  AÇIK: 09:00 - 22:00',
+      url: '',
+      // LED görünümü
+      brightness: 1.4,
+      fill: 0.6,
+      shape: 'round',
+      ledMask: true,
+      viewAngle: 0.5,
+      // Sahne
+      night: false,
+      bloom: true,
+    };
+
+    const MAX_RES = 4096;
+    const FONT = 'system-ui, "Segoe UI", Roboto, Arial, sans-serif';
+    const BUILDING = { x0: -12, x1: 12, h: 16.5, d: 14 };
+
+    // =====================================================================
+    // Renderer, sahne, kamera
+    // =====================================================================
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    document.body.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+    const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.05, 1000);
+    camera.position.set(0, 1.7, 26);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.maxPolarAngle = Math.PI * 0.495;
+    controls.minDistance = 0.02;
+    controls.maxDistance = 150;
+    controls.target.set(0, 8, 0);
+
+    const composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+    const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.3, 0.4, 0.9);
+    composer.addPass(bloomPass);
+    composer.addPass(new OutputPass());
+
+    // Gökyüzü (gradyan küre)
+    const sky = new THREE.Mesh(
+      new THREE.SphereGeometry(500, 32, 16),
+      new THREE.ShaderMaterial({
+        side: THREE.BackSide,
+        depthWrite: false,
+        uniforms: { top: { value: new THREE.Color() }, bottom: { value: new THREE.Color() } },
+        vertexShader: /* glsl */`
+          varying vec3 vDir;
+          void main() {
+            vDir = normalize(position);
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }`,
+        fragmentShader: /* glsl */`
+          uniform vec3 top; uniform vec3 bottom;
+          varying vec3 vDir;
+          void main() {
+            float h = clamp(vDir.y * 1.6 + 0.05, 0.0, 1.0);
+            gl_FragColor = vec4(mix(bottom, top, pow(h, 0.6)), 1.0);
+          }`,
+      })
+    );
+    scene.add(sky);
+    scene.fog = new THREE.Fog(0xcfe3f5, 80, 420);
+
+    // Işıklar
+    const hemi = new THREE.HemisphereLight(0xcfe6ff, 0x6b6250, 0.8);
+    scene.add(hemi);
+    const sun = new THREE.DirectionalLight(0xfff1dd, 3);
+    sun.position.set(30, 40, 35);
+    sun.target.position.set(0, 5, 0);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    Object.assign(sun.shadow.camera, { left: -40, right: 40, top: 40, bottom: -40, near: 1, far: 150 });
+    sun.shadow.bias = -0.0005;
+    sun.shadow.normalBias = 0.02;
+    scene.add(sun, sun.target);
+
+    // =====================================================================
+    // Yardımcılar
+    // =====================================================================
+    const unitBox = new THREE.BoxGeometry(1, 1, 1);
+    function box(parent, mat, w, h, d, x, y, z, shadow = true) {
+      const m = new THREE.Mesh(unitBox, mat);
+      m.scale.set(w, h, d);
+      m.position.set(x, y, z);
+      m.castShadow = shadow;
+      m.receiveShadow = true;
+      parent.add(m);
+      return m;
+    }
+
+    function mulberry32(a) {
+      return function () {
+        a |= 0; a = (a + 0x6d2b79f5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+    const rand = mulberry32(42);
+
+    function canvasTexture(w, h, draw, repeatX = 1, repeatY = 1) {
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      draw(c.getContext('2d'), w, h);
+      const t = new THREE.CanvasTexture(c);
+      t.colorSpace = THREE.SRGBColorSpace;
+      t.wrapS = t.wrapT = THREE.RepeatWrapping;
+      t.repeat.set(repeatX, repeatY);
+      t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+      return t;
+    }
+
+    function fitText(ctx, text, maxW, maxH, weight = 800) {
+      ctx.font = `${weight} ${maxH}px ${FONT}`;
+      const w = ctx.measureText(text).width || 1;
+      const size = maxH * Math.min(1, maxW / w);
+      ctx.font = `${weight} ${size}px ${FONT}`;
+      return size;
+    }
+
+    // =====================================================================
+    // Malzemeler
+    // =====================================================================
+    const concreteTex = canvasTexture(512, 512, (ctx, w, h) => {
+      ctx.fillStyle = '#c9c6bf'; ctx.fillRect(0, 0, w, h);
+      for (let i = 0; i < 6000; i++) {
+        const v = 180 + rand() * 40;
+        ctx.fillStyle = `rgba(${v},${v - 3},${v - 8},0.25)`;
+        ctx.fillRect(rand() * w, rand() * h, 2, 2);
+      }
+      ctx.strokeStyle = 'rgba(90,88,82,0.55)'; ctx.lineWidth = 3;
+      ctx.strokeRect(0, 0, w, h);
+      ctx.beginPath(); ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2); ctx.stroke();
+    }, (BUILDING.x1 - BUILDING.x0) / 3, BUILDING.h / 1.8);
+
+    const brickTex = canvasTexture(256, 256, (ctx, w, h) => {
+      ctx.fillStyle = '#b9ada0'; ctx.fillRect(0, 0, w, h);
+      const bh = 16, bw = 64;
+      for (let y = 0; y < h; y += bh) {
+        const off = (y / bh) % 2 ? bw / 2 : 0;
+        for (let x = -bw; x < w + bw; x += bw) {
+          const r = 130 + rand() * 40;
+          ctx.fillStyle = `rgb(${r},${r * 0.55},${r * 0.42})`;
+          ctx.fillRect(x + off + 1.5, y + 1.5, bw - 3, bh - 3);
+        }
+      }
+    }, 6, 5);
+
+    const mats = {
+      concrete: new THREE.MeshStandardMaterial({ map: concreteTex, roughness: 0.9 }),
+      brick: new THREE.MeshStandardMaterial({ map: brickTex, roughness: 0.95 }),
+      plaster: new THREE.MeshStandardMaterial({ color: 0xd8d1c3, roughness: 0.9 }),
+      darkMetal: new THREE.MeshStandardMaterial({ color: 0x2a2d33, metalness: 0.7, roughness: 0.45 }),
+      stone: new THREE.MeshStandardMaterial({ color: 0x55575c, roughness: 0.8 }),
+      trim: new THREE.MeshStandardMaterial({ color: 0xe9e6df, roughness: 0.7 }),
+      glass: new THREE.MeshStandardMaterial({ color: 0x3a5068, metalness: 0.9, roughness: 0.08 }),
+      litGlass: new THREE.MeshStandardMaterial({ color: 0x3a5068, metalness: 0.9, roughness: 0.08, emissive: 0xffd49a, emissiveIntensity: 0 }),
+      shopGlass: new THREE.MeshStandardMaterial({ color: 0x2c3e50, metalness: 0.85, roughness: 0.05, emissive: 0xfff0d0, emissiveIntensity: 0 }),
+      lamp: new THREE.MeshStandardMaterial({ color: 0xdddddd, emissive: 0xffe2b0, emissiveIntensity: 0 }),
+      asphalt: new THREE.MeshStandardMaterial({ color: 0x2d2f33, roughness: 0.95 }),
+      sidewalk: new THREE.MeshStandardMaterial({ color: 0x9a9892, roughness: 0.9 }),
+      grass: new THREE.MeshStandardMaterial({ color: 0x55604a, roughness: 1 }),
+      paint: new THREE.MeshStandardMaterial({ color: 0xf2f2f2, roughness: 0.6 }),
+    };
+
+    // =====================================================================
+    // Çevre: zemin, yol, kaldırım, sokak lambaları
+    // =====================================================================
+    const world = new THREE.Group();
+    scene.add(world);
+
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(900, 900), mats.grass);
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -0.02;
+    ground.receiveShadow = true;
+    world.add(ground);
+
+    box(world, mats.sidewalk, 400, 0.15, 6, 0, 0.075, 3, false);          // bina önü kaldırım
+    box(world, mats.stone, 400, 0.17, 0.25, 0, 0.085, 6, false);          // bordür
+    const road = new THREE.Mesh(new THREE.PlaneGeometry(400, 14), mats.asphalt);
+    road.rotation.x = -Math.PI / 2;
+    road.position.set(0, 0.01, 13);
+    road.receiveShadow = true;
+    world.add(road);
+    box(world, mats.sidewalk, 400, 0.15, 6, 0, 0.075, 23, false);         // karşı kaldırım
+
+    const dashes = new THREE.InstancedMesh(new THREE.PlaneGeometry(3, 0.15), mats.paint, 70);
+    const dm = new THREE.Matrix4();
+    for (let i = 0; i < 70; i++) {
+      dm.makeRotationX(-Math.PI / 2).setPosition(-207 + i * 6, 0.02, 13);
+      dashes.setMatrixAt(i, dm);
+    }
+    dashes.receiveShadow = true;
+    world.add(dashes);
+
+    const streetLights = [];
+    for (const x of [-26, -10, 10, 26]) {
+      box(world, mats.darkMetal, 0.16, 6.6, 0.16, x, 3.3, 5.3);
+      box(world, mats.darkMetal, 0.1, 0.1, 1.5, x, 6.5, 4.6);
+      box(world, mats.lamp, 0.55, 0.12, 0.3, x, 6.42, 3.9, false);
+      const spot = new THREE.SpotLight(0xffd9a8, 0, 30, 0.95, 0.6, 1.6);
+      spot.position.set(x, 6.3, 3.9);
+      spot.target.position.set(x, 0, 3.5);
+      world.add(spot, spot.target);
+      streetLights.push(spot);
+    }
+
+    // =====================================================================
+    // Binalar
+    // =====================================================================
+    function makeBuilding(o) {
+      const g = new THREE.Group();
+      const w = o.x1 - o.x0, cx = (o.x0 + o.x1) / 2;
+      box(g, o.mat, w, o.h, o.d, cx, o.h / 2, -o.d / 2);
+      box(g, mats.trim, w + 0.3, 0.6, o.d + 0.3, cx, o.h + 0.3, -o.d / 2);   // parapet
+
+      const floors = Math.floor((o.h - o.groundH - 0.8) / o.floorH);
+      for (let f = 0; f < floors; f++) {
+        const baseY = o.groundH + f * o.floorH;
+        box(g, mats.trim, w, 0.18, 0.14, cx, baseY, 0.07, false);            // kat bandı
+        const y = baseY + o.floorH / 2 + 0.1;
+        for (let c = 0; c < o.cols; c++) {
+          const x = o.x0 + (c + 0.5) * (w / o.cols);
+          box(g, mats.darkMetal, o.winW + 0.16, o.winH + 0.16, 0.08, x, y, 0.02, false);
+          box(g, rand() < 0.4 ? mats.litGlass : mats.glass, o.winW, o.winH, 0.06, x, y, 0.05, false);
+          box(g, mats.trim, o.winW + 0.3, 0.08, 0.22, x, y - o.winH / 2 - 0.1, 0.1, false);
+        }
+      }
+      if (o.simpleShop) {
+        box(g, mats.shopGlass, w - 1.2, o.groundH - 1.2, 0.06, cx, o.groundH / 2, 0.04, false);
+        box(g, mats.darkMetal, w - 1.0, 0.15, 0.12, cx, o.groundH - 0.55, 0.07, false);
+      }
+      world.add(g);
+      return g;
+    }
+
+    // Ana işyeri binası
+    makeBuilding({ ...BUILDING, mat: mats.concrete, groundH: 4.8, floorH: 3.6, cols: 7, winW: 2.0, winH: 2.2 });
+    // Komşu binalar
+    makeBuilding({ x0: -29, x1: -12.3, h: 12, d: 12, mat: mats.brick, groundH: 4, floorH: 3.2, cols: 5, winW: 1.6, winH: 1.9, simpleShop: true });
+    makeBuilding({ x0: 12.3, x1: 27, h: 20, d: 14, mat: mats.plaster, groundH: 4.2, floorH: 3.4, cols: 4, winW: 1.8, winH: 2.1, simpleShop: true });
+
+    // Ana binanın zemin kat vitrini, giriş kapısı, sundurma ve tabela
+    {
+      const g = new THREE.Group();
+      box(g, mats.stone, 24, 0.3, 0.2, 0, 0.15, 0.1, false);
+      box(g, mats.shopGlass, 22.4, 3.5, 0.06, 0, 2.05, 0.04, false);
+      for (let x = -11.2; x <= 11.21; x += 2.8) box(g, mats.darkMetal, 0.1, 3.6, 0.12, x, 2.05, 0.08, false);
+      box(g, mats.darkMetal, 22.6, 0.15, 0.14, 0, 3.85, 0.08, false);
+      box(g, mats.darkMetal, 2.3, 2.9, 0.1, 0, 1.75, 0.12, false);
+      box(g, mats.glass, 2.0, 2.65, 0.05, 0, 1.7, 0.18, false);
+      box(g, mats.darkMetal, 24.4, 0.7, 1.8, 0, 4.45, 0.9);                   // sundurma
+
+      const signTex = canvasTexture(2048, 90, (ctx, w, h) => {
+        ctx.fillStyle = '#16181c'; ctx.fillRect(0, 0, w, h);
+        ctx.fillStyle = '#ffffff';
+        fitText(ctx, 'ATLAS  MAĞAZA', w * 0.9, h * 0.72, 800);
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText('ATLAS  MAĞAZA', w / 2, h / 2 + 2);
+      });
+      signTex.wrapS = signTex.wrapT = THREE.ClampToEdgeWrapping;
+      mats.sign = new THREE.MeshStandardMaterial({ map: signTex, emissiveMap: signTex, emissive: 0xffffff, emissiveIntensity: 0.05, roughness: 0.5 });
+      const sign = new THREE.Mesh(new THREE.PlaneGeometry(22, 0.5), mats.sign);
+      sign.position.set(0, 4.45, 1.81);
+      g.add(sign);
+      world.add(g);
+    }
+
+    // =====================================================================
+    // LED ekran malzemesi (shader)
+    // =====================================================================
+    const ledMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        map: { value: null },
+        texSize: { value: new THREE.Vector2(1, 1) },
+        res: { value: new THREE.Vector2(params.resX, params.resY) },
+        fitScale: { value: new THREE.Vector2(1, 1) },
+        brightness: { value: params.brightness },
+        fill: { value: params.fill },
+        shape: { value: 0 },
+        ledMask: { value: 1 },
+        viewAngle: { value: params.viewAngle },
+        bodyColor: { value: new THREE.Color(0x0a0b0d) },
+      },
+      vertexShader: /* glsl */`
+        varying vec2 vUv;
+        varying vec3 vPosW;
+        varying vec3 vNormalW;
+        void main() {
+          vUv = uv;
+          vec4 wp = modelMatrix * vec4(position, 1.0);
+          vPosW = wp.xyz;
+          vNormalW = normalize(mat3(modelMatrix) * normal);
+          gl_Position = projectionMatrix * viewMatrix * wp;
+        }`,
+      fragmentShader: /* glsl */`
+        uniform sampler2D map;
+        uniform vec2 texSize;
+        uniform vec2 res;
+        uniform vec2 fitScale;
+        uniform float brightness;
+        uniform float fill;
+        uniform float shape;
+        uniform float ledMask;
+        uniform float viewAngle;
+        uniform vec3 bodyColor;
+        varying vec2 vUv;
+        varying vec3 vPosW;
+        varying vec3 vNormalW;
+
+        void main() {
+          // Her LED bir hücre: hücre indeksi ve hücre içi konum
+          vec2 cell = vUv * res;
+          vec2 id = floor(cell);
+          vec2 f = fract(cell) - 0.5;
+          vec2 fw = fwidth(cell);                 // ekran pikseli başına düşen LED sayısı
+          float cellsPerPx = max(fw.x, fw.y);
+
+          // LED'in göstereceği renk: görselin LED merkezine denk gelen bölgesinin ortalaması
+          vec2 cuv = (id + 0.5) / res;
+          vec2 iuv = (cuv - 0.5) * fitScale + 0.5;
+          vec2 texelsPerLed = texSize * fitScale / res;
+          float lod = log2(max(max(texelsPerLed.x, texelsPerLed.y), 1.0)) + log2(max(cellsPerPx, 1.0));
+          vec3 c = textureLod(map, iuv, lod).rgb;
+          float inside = step(0.0, iuv.x) * step(iuv.x, 1.0) * step(0.0, iuv.y) * step(iuv.y, 1.0);
+          c *= inside;
+
+          // LED maskesi (yuvarlak veya kare), uzaktan bakınca ortalama kaplamaya geçiş (moire önleme)
+          float r = 0.5 * fill;
+          float d = shape < 0.5 ? length(f) : max(abs(f.x), abs(f.y));
+          float aa = max(fwidth(d), 1e-4);
+          float mask = 1.0 - smoothstep(r - aa, r + aa, d);
+          float cov = shape < 0.5 ? 3.14159265 * r * r : 4.0 * r * r;
+          float far = smoothstep(0.3, 0.8, cellsPerPx);
+          mask = mix(mask, cov, far);
+          float halo = exp(-pow(d / max(r, 0.05), 2.0) * 1.5) * 0.18 * (1.0 - far);
+          if (ledMask < 0.5) { mask = 1.0; cov = 1.0; halo = 0.0; }
+
+          // Görüş açısıyla parlaklık kaybı
+          vec3 V = normalize(cameraPosition - vPosW);
+          float ndv = max(dot(normalize(vNormalW), V), 0.0);
+          float angle = mix(1.0, pow(ndv, 0.8), viewAngle);
+
+          vec3 led = c * brightness * angle * (mask / sqrt(cov) + halo);
+          vec3 col = bodyColor * (1.0 - mask) + led;
+          gl_FragColor = vec4(col, 1.0);
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
+        }`,
+    });
+
+    // =====================================================================
+    // LED ekran modeli (kabin + panel)
+    // =====================================================================
+    const screen = new THREE.Group();
+    world.add(screen);
+    const cabinet = box(screen, mats.darkMetal, 1, 1, 0.3, 0, 0, 0.18);
+    const bracketTop = box(screen, mats.darkMetal, 1, 0.12, 0.08, 0, 0, 0.04);
+    const bracketBottom = box(screen, mats.darkMetal, 1, 0.12, 0.08, 0, 0, 0.04);
+    const panel = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), ledMaterial);
+    panel.position.z = 0.35;
+    screen.add(panel);
+
+    function updateScreenTransform() {
+      const { width: w, height: h } = params;
+      const bezel = 0.06;
+      screen.position.set(params.posX, params.elevation + h / 2, 0);
+      panel.scale.set(w, h, 1);
+      cabinet.scale.set(w + bezel * 2, h + bezel * 2, 0.3);
+      bracketTop.scale.x = bracketBottom.scale.x = w * 0.9;
+      bracketTop.position.y = h * 0.3;
+      bracketBottom.position.y = -h * 0.3;
+    }
+
+    // =====================================================================
+    // Ekran içerikleri
+    // =====================================================================
+    const contentCanvas = document.createElement('canvas');
+    const cctx = contentCanvas.getContext('2d');
+    let canvasTex = null;
+    let upload = null;          // { tex, w, h, name, video }
+    let staticDirty = true;
+
+    function makeCanvasTex() {
+      if (canvasTex) canvasTex.dispose();
+      canvasTex = new THREE.CanvasTexture(contentCanvas);
+      canvasTex.colorSpace = THREE.SRGBColorSpace;
+      canvasTex.minFilter = THREE.LinearMipmapLinearFilter;
+    }
+
+    // Hazır içerikler ekranın fiziksel en-boy oranında çizilir (gerçek bir içerik tasarımcısı gibi)
+    function ensureCanvasSize() {
+      const aspect = params.width / params.height;
+      const W = params.resX > 900 || params.resY > 900 ? 2048 : 1024;
+      let cw = W, ch = Math.round(W / aspect);
+      if (ch > W) { ch = W; cw = Math.round(W * aspect); }
+      cw = Math.max(32, cw); ch = Math.max(32, ch);
+      if (contentCanvas.width !== cw || contentCanvas.height !== ch || !canvasTex) {
+        contentCanvas.width = cw;
+        contentCanvas.height = ch;
+        makeCanvasTex();
+        staticDirty = true;
+      }
+    }
+
+    const drawers = {
+      test(ctx, W, H) {
+        ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+        const bars = ['#c0c0c0', '#c0c000', '#00c0c0', '#00c000', '#c000c0', '#c00000', '#0000c0'];
+        const bw = W / bars.length;
+        bars.forEach((c, i) => { ctx.fillStyle = c; ctx.fillRect(i * bw, 0, Math.ceil(bw), H * 0.6); });
+        const rev = ['#0000c0', '#111', '#c000c0', '#111', '#00c0c0', '#111', '#c0c0c0'];
+        rev.forEach((c, i) => { ctx.fillStyle = c; ctx.fillRect(i * bw, H * 0.6, Math.ceil(bw), H * 0.1); });
+        const g = ctx.createLinearGradient(0, 0, W * 0.6, 0);
+        g.addColorStop(0, '#000'); g.addColorStop(1, '#fff');
+        ctx.fillStyle = g; ctx.fillRect(0, H * 0.7, W * 0.6, H * 0.3);
+        ['#ff0000', '#00ff00', '#0000ff', '#ffffff'].forEach((c, i) => {
+          ctx.fillStyle = c; ctx.fillRect(W * 0.6 + i * W * 0.1, H * 0.7, W * 0.1, H * 0.3);
+        });
+        ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = Math.max(1, W / 512);
+        for (let i = 1; i < 16; i++) { ctx.beginPath(); ctx.moveTo(i * W / 16, 0); ctx.lineTo(i * W / 16, H); ctx.stroke(); }
+        for (let i = 1; i < 8; i++) { ctx.beginPath(); ctx.moveTo(0, i * H / 8); ctx.lineTo(W, i * H / 8); ctx.stroke(); }
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(2, W / 256);
+        ctx.beginPath(); ctx.arc(W / 2, H / 2, Math.min(W, H) * 0.42, 0, Math.PI * 2); ctx.stroke();
+        ctx.strokeRect(ctx.lineWidth / 2, ctx.lineWidth / 2, W - ctx.lineWidth, H - ctx.lineWidth);
+        const label = `${params.resX} × ${params.resY} px`;
+        const size = fitText(ctx, label, W * 0.5, H * 0.14, 800);
+        const tw = ctx.measureText(label).width;
+        ctx.fillStyle = 'rgba(0,0,0,0.85)';
+        ctx.fillRect(W / 2 - tw / 2 - size * 0.4, H / 2 - size * 0.75, tw + size * 0.8, size * 1.5);
+        ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(label, W / 2, H / 2);
+      },
+
+      promo(ctx, W, H, t) {
+        const h0 = (t * 15) % 360;
+        const g = ctx.createLinearGradient(0, 0, W, H);
+        g.addColorStop(0, `hsl(${h0}, 90%, 52%)`);
+        g.addColorStop(0.5, `hsl(${(h0 + 40) % 360}, 95%, 50%)`);
+        g.addColorStop(1, `hsl(${(h0 + 80) % 360}, 85%, 45%)`);
+        ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+        ctx.fillStyle = 'rgba(255,255,255,0.12)';
+        for (let i = 0; i < 6; i++) {
+          const r = Math.min(W, H) * (0.15 + 0.1 * (i % 3));
+          ctx.beginPath();
+          ctx.arc(W * ((i * 0.23 + t * 0.03) % 1.2 - 0.1), H * (0.2 + 0.6 * ((i * 37) % 10) / 10), r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#fff';
+        const pulse = 1 + 0.04 * Math.sin(t * 3);
+        fitText(ctx, '%50 İNDİRİM', W * 0.9 * pulse, H * 0.42 * pulse, 900);
+        ctx.shadowColor = 'rgba(0,0,0,0.35)'; ctx.shadowBlur = H * 0.03;
+        ctx.fillText('%50 İNDİRİM', W / 2, H * 0.42);
+        ctx.shadowBlur = 0;
+        fitText(ctx, 'SEZON SONU  •  TÜM ÜRÜNLERDE', W * 0.85, H * 0.13, 700);
+        ctx.fillStyle = '#fff8d0';
+        ctx.fillText('SEZON SONU  •  TÜM ÜRÜNLERDE', W / 2, H * 0.78);
+      },
+
+      marquee(ctx, W, H, t) {
+        ctx.fillStyle = '#050505'; ctx.fillRect(0, 0, W, H);
+        ctx.fillStyle = '#c62828';
+        ctx.fillRect(0, 0, W, H * 0.16); ctx.fillRect(0, H * 0.84, W, H * 0.16);
+        ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        fitText(ctx, 'ATLAS MAĞAZA', W * 0.9, H * 0.11, 800);
+        ctx.fillText('ATLAS MAĞAZA', W / 2, H * 0.08);
+        const now = new Date().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+        fitText(ctx, now, W * 0.9, H * 0.11, 700);
+        ctx.fillText(now, W / 2, H * 0.92);
+
+        const text = (params.marqueeText || ' ') + '     ';
+        const fs = Math.min(H * 0.5, W * 0.6);
+        ctx.font = `800 ${fs}px ${FONT}`;
+        ctx.textAlign = 'left';
+        const tw = Math.max(ctx.measureText(text).width, 1);
+        const start = -((t * H * 1.1) % tw);
+        ctx.fillStyle = '#ffd600';
+        for (let x = start; x < W; x += tw) ctx.fillText(text, x, H * 0.52);
+      },
+
+      anim(ctx, W, H, t) {
+        ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+        ctx.globalCompositeOperation = 'lighter';
+        for (let i = 0; i < 6; i++) {
+          const cx = W * (0.5 + 0.42 * Math.sin(t * 0.45 * (0.6 + i * 0.21) + i));
+          const cy = H * (0.5 + 0.42 * Math.cos(t * 0.55 * (0.5 + i * 0.17) + i * 2));
+          const r = Math.max(W, H) * 0.38;
+          const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+          g.addColorStop(0, `hsla(${(t * 40 + i * 60) % 360}, 100%, 55%, 0.9)`);
+          g.addColorStop(1, 'hsla(0, 0%, 0%, 0)');
+          ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+        }
+        ctx.globalCompositeOperation = 'source-over';
+      },
+
+      clock(ctx, W, H) {
+        const g = ctx.createLinearGradient(0, 0, W, H);
+        g.addColorStop(0, '#0d1b4c'); g.addColorStop(1, '#2a0b45');
+        ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+        const d = new Date();
+        const time = d.toLocaleTimeString('tr-TR');
+        const date = d.toLocaleDateString('tr-TR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#4dd0e1';
+        fitText(ctx, 'HOŞ GELDİNİZ', W * 0.8, H * 0.14, 800);
+        ctx.fillText('HOŞ GELDİNİZ', W / 2, H * 0.16);
+        ctx.fillStyle = '#fff';
+        fitText(ctx, time, W * 0.85, H * 0.42, 800);
+        ctx.fillText(time, W / 2, H * 0.5);
+        ctx.fillStyle = '#c5cae9';
+        fitText(ctx, date, W * 0.85, H * 0.11, 600);
+        ctx.fillText(date, W / 2, H * 0.84);
+      },
+    };
+
+    function currentContent() {
+      if (params.source === 'upload' && upload) return upload;
+      return { tex: canvasTex, w: contentCanvas.width, h: contentCanvas.height, name: sourceNames[params.source] };
+    }
+
+    function updateContent(t) {
+      if (params.source === 'upload' && upload) return;
+      const drawer = drawers[params.source] || drawers.test;
+      if (params.source === 'test' && !staticDirty) return;
+      drawer(cctx, contentCanvas.width, contentCanvas.height, t);
+      canvasTex.needsUpdate = true;
+      staticDirty = false;
+    }
+
+    // --- Dosya / URL yükleme ---
+    const toastEl = document.getElementById('toast');
+    let toastTimer;
+    function toast(msg) {
+      toastEl.textContent = msg;
+      toastEl.classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toastEl.classList.remove('show'), 3000);
+    }
+
+    function setUpload(tex, w, h, name, video = null) {
+      if (upload) {
+        upload.tex.dispose();
+        if (upload.video) { upload.video.pause(); upload.video.removeAttribute('src'); upload.video.load(); }
+      }
+      upload = { tex, w, h, name, video };
+      params.source = 'upload';
+      refreshGui();
+      applyAll();
+      toast(`Yüklendi: ${name}`);
+    }
+
+    function loadImage(src, name, crossOrigin = false) {
+      const img = new Image();
+      if (crossOrigin) img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        const tex = new THREE.Texture(img);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.needsUpdate = true;
+        setUpload(tex, img.naturalWidth, img.naturalHeight, name);
+      };
+      img.onerror = () => toast('Görsel yüklenemedi (adres veya CORS izni hatalı olabilir).');
+      img.src = src;
+    }
+
+    function loadVideo(src, name, crossOrigin = false) {
+      const v = document.createElement('video');
+      if (crossOrigin) v.crossOrigin = 'anonymous';
+      v.loop = true; v.muted = true; v.playsInline = true;
+      v.onloadeddata = () => {
+        const tex = new THREE.VideoTexture(v);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.generateMipmaps = true;
+        tex.minFilter = THREE.LinearMipmapLinearFilter;
+        setUpload(tex, v.videoWidth, v.videoHeight, name, v);
+        v.play().catch(() => toast('Video otomatik başlatılamadı; ekrana tıklayın.'));
+      };
+      v.onerror = () => toast('Video yüklenemedi (adres, format veya CORS izni hatalı olabilir).');
+      v.src = src;
+    }
+
+    function loadFile(file) {
+      if (!file) return;
+      const src = URL.createObjectURL(file);
+      if (file.type.startsWith('video/')) loadVideo(src, file.name);
+      else if (file.type.startsWith('image/')) loadImage(src, file.name);
+      else toast('Desteklenmeyen dosya türü. Görsel veya video seçin.');
+    }
+
+    const fileInput = document.getElementById('file');
+    fileInput.addEventListener('change', () => { loadFile(fileInput.files[0]); fileInput.value = ''; });
+
+    const dropEl = document.getElementById('drop');
+    window.addEventListener('dragover', (e) => { e.preventDefault(); dropEl.classList.add('show'); });
+    window.addEventListener('dragleave', (e) => { if (!e.relatedTarget) dropEl.classList.remove('show'); });
+    window.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropEl.classList.remove('show');
+      loadFile(e.dataTransfer.files[0]);
+    });
+    renderer.domElement.addEventListener('click', () => { if (upload?.video?.paused) upload.video.play(); });
+
+    // =====================================================================
+    // Çözünürlük / boyut hesapları
+    // =====================================================================
+    const clampRes = (v) => Math.max(4, Math.min(MAX_RES, Math.round(v)));
+    const round1 = (v) => Math.round(v * 10) / 10;
+
+    function syncPitch() { params.pitch = Math.round((params.width * 100000) / params.resX) / 100; }
+
+    function onResX() {
+      if (params.squarePixels) params.resY = clampRes((params.resX * params.height) / params.width);
+      syncPitch(); applyAll();
+    }
+    function onResY() {
+      if (params.squarePixels) params.resX = clampRes((params.resY * params.width) / params.height);
+      syncPitch(); applyAll();
+    }
+    function onPitch() {
+      params.resX = clampRes((params.width * 1000) / params.pitch);
+      params.resY = clampRes((params.height * 1000) / params.pitch);
+      applyAll();
+    }
+    // Kare piksel modunda piksel aralığı sabit kalır (ekran büyüdükçe LED sayısı artar, gerçek kabin eklemek gibi)
+    function onSize() {
+      if (params.squarePixels) {
+        params.resX = clampRes((params.width * 1000) / params.pitch);
+        params.resY = clampRes((params.height * 1000) / params.pitch);
+      }
+      syncPitch(); applyAll();
+    }
+    function onSquare() {
+      if (params.squarePixels) params.resY = clampRes((params.resX * params.height) / params.width);
+      syncPitch(); applyAll();
+    }
+    function onResPreset() {
+      if (!params.resPreset) return;
+      const [x, y] = params.resPreset.split('x').map(Number);
+      params.resX = x; params.resY = y;
+      if (params.squarePixels) params.height = Math.min(14, Math.max(0.5, round1((params.width * y) / x)));
+      params.resPreset = '';
+      syncPitch(); applyAll();
+    }
+
+    function applyAll() {
+      updateScreenTransform();
+      ensureCanvasSize();
+      staticDirty = true;
+      refreshGui();
+      updateInfo();
+    }
+
+    function updateLedUniforms() {
+      const u = ledMaterial.uniforms;
+      const c = currentContent();
+      u.map.value = c.tex;
+      u.texSize.value.set(c.w, c.h);
+      u.res.value.set(params.resX, params.resY);
+      const as = params.width / params.height;
+      const ai = c.w / c.h;
+      if (params.fit === 'stretch') u.fitScale.value.set(1, 1);
+      else if ((params.fit === 'contain') === (ai > as)) u.fitScale.value.set(1, ai / as);
+      else u.fitScale.value.set(as / ai, 1);
+      u.brightness.value = params.brightness;
+      u.fill.value = params.fill;
+      u.shape.value = params.shape === 'round' ? 0 : 1;
+      u.ledMask.value = params.ledMask ? 1 : 0;
+      u.viewAngle.value = params.viewAngle;
+    }
+
+    // =====================================================================
+    // Bilgi paneli
+    // =====================================================================
+    const infoEl = document.getElementById('info');
+    const fmt = (v, d = 0) => v.toLocaleString('tr-TR', { minimumFractionDigits: d, maximumFractionDigits: d });
+    let camDistText = '';
+
+    function updateInfo() {
+      const { width: w, height: h, resX, resY } = params;
+      const px = (w * 1000) / resX, py = (h * 1000) / resY;
+      const total = resX * resY;
+      const cabX = Math.ceil(w / 0.5), cabY = Math.ceil(h / 0.5);
+      const c = currentContent();
+      const warn = [];
+      if (Math.abs(px / py - 1) > 0.03) warn.push(`⚠ Pikseller kare değil (yatay ${fmt(px, 1)} mm, dikey ${fmt(py, 1)} mm). Görüntü esneyecektir.`);
+      if (c.w < resX * 0.8 || c.h < resY * 0.8) warn.push(`ℹ İçerik (${c.w}×${c.h}) ekran çözünürlüğünden düşük.`);
+      infoEl.innerHTML = `
+        <h1>LED Ekran Bilgileri</h1>
+        <table>
+          <tr><td>Boyut</td><td>${fmt(w, 2)} × ${fmt(h, 2)} m (${fmt(w * h, 1)} m²)</td></tr>
+          <tr><td>Çözünürlük</td><td>${resX} × ${resY} px</td></tr>
+          <tr><td>Toplam piksel</td><td>${fmt(total)}</td></tr>
+          <tr><td>Piksel aralığı</td><td>P${fmt(px, 1)} mm${Math.abs(px - py) > 0.05 ? ` / ${fmt(py, 1)} mm` : ''}</td></tr>
+          <tr><td>Piksel yoğunluğu</td><td>${fmt(total / (w * h))} px/m²</td></tr>
+          <tr><td>Min. izleme mesafesi</td><td>≈ ${fmt(px / 1, 1)} m</td></tr>
+          <tr><td>İdeal izleme mesafesi</td><td>≈ ${fmt(px * 3, 1)} m</td></tr>
+          <tr><td>Kabin (500×500 mm)</td><td>${cabX} × ${cabY} = ${cabX * cabY} adet</td></tr>
+          <tr><td>İçerik</td><td>${escapeHtml(c.name || '')}</td></tr>
+          <tr><td>Kamera mesafesi</td><td id="camdist">${camDistText}</td></tr>
+        </table>
+        ${warn.map((x) => `<div class="warn">${x}</div>`).join('')}`;
+    }
+    function escapeHtml(s) {
+      return s.replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    }
+
+    // =====================================================================
+    // Gündüz / gece
+    // =====================================================================
+    function applyLighting() {
+      const n = params.night;
+      sky.material.uniforms.top.value.set(n ? 0x02040c : 0x4a90d9);
+      sky.material.uniforms.bottom.value.set(n ? 0x151c30 : 0xcfe3f5);
+      scene.fog.color.set(n ? 0x151c30 : 0xcfe3f5);
+      sun.intensity = n ? 0.25 : 3;
+      sun.color.set(n ? 0x8fa8ff : 0xfff1dd);
+      hemi.intensity = n ? 0.12 : 0.8;
+      scene.environmentIntensity = n ? 0.08 : 0.6;
+      streetLights.forEach((s) => (s.intensity = n ? 70 : 0));
+      mats.lamp.emissiveIntensity = n ? 3 : 0;
+      mats.litGlass.emissiveIntensity = n ? 0.3 : 0;
+      mats.shopGlass.emissiveIntensity = n ? 0.18 : 0;
+      mats.sign.emissiveIntensity = n ? 1.5 : 0.05;
+      ledMaterial.uniforms.bodyColor.value.set(n ? 0x030304 : 0x0d0e11);
+      bloomPass.strength = n ? 0.45 : 0.2;
+      bloomPass.radius = n ? 0.35 : 0.3;
+      bloomPass.threshold = n ? 0.85 : 0.95;
+      bloomPass.enabled = params.bloom;
+    }
+
+    // =====================================================================
+    // Kamera hazır görünümleri
+    // =====================================================================
+    function screenCenter() {
+      return new THREE.Vector3(params.posX, params.elevation + params.height / 2, 0.35);
+    }
+    function distanceToFit(spanW, spanH) {
+      const t = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+      return Math.max(spanW / (2 * t * camera.aspect), spanH / (2 * t));
+    }
+    const views = {
+      street() {
+        camera.position.set(0, 1.7, 26);
+        controls.target.copy(screenCenter());
+      },
+      opposite() {
+        camera.position.set(-16, 1.7, 23);
+        controls.target.copy(screenCenter());
+      },
+      close() {
+        const c = screenCenter();
+        const d = distanceToFit(params.width * 1.12, params.height * 1.12);
+        camera.position.set(c.x, c.y, c.z + d);
+        controls.target.copy(c);
+      },
+      detail() {
+        const c = screenCenter();
+        const pitchM = params.width / params.resX;
+        const d = Math.max(distanceToFit(pitchM * 24, pitchM * 12), 0.03);
+        camera.position.set(c.x + d * 0.25, c.y + d * 0.1, c.z + d);
+        controls.target.copy(c);
+      },
+    };
+
+    // =====================================================================
+    // GUI
+    // =====================================================================
+    const sourceNames = {
+      test: 'Test deseni',
+      promo: 'Kampanya',
+      marquee: 'Kayan yazı',
+      anim: 'Renkli animasyon',
+      clock: 'Saat / karşılama',
+      upload: 'Yüklenen görsel / video',
+    };
+    const gui = new GUI({ title: 'LED Ekran Parametreleri', width: 330 });
+
+    const fSize = gui.addFolder('Ekran boyutu ve konumu');
+    fSize.add(params, 'width', 1, 22, 0.1).name('Genişlik (m)').onChange(onSize);
+    fSize.add(params, 'height', 0.5, 14, 0.1).name('Yükseklik (m)').onChange(onSize);
+    fSize.add(params, 'posX', -10, 10, 0.1).name('Yatay konum (m)').onChange(applyAll);
+    fSize.add(params, 'elevation', 0.3, 15, 0.1).name('Yerden yükseklik (m)').onChange(applyAll);
+
+    const fRes = gui.addFolder('Çözünürlük');
+    fRes.add(params, 'resPreset', {
+      'Hazır çözünürlük seçin…': '',
+      '64 × 32': '64x32',
+      '128 × 64': '128x64',
+      '192 × 96': '192x96',
+      '256 × 128': '256x128',
+      '320 × 160': '320x160',
+      '480 × 240': '480x240',
+      '640 × 320': '640x320',
+      '960 × 480': '960x480',
+      '1280 × 720 (HD)': '1280x720',
+      '1920 × 1080 (Full HD)': '1920x1080',
+      '3840 × 2160 (4K)': '3840x2160',
+    }).name('Hazır ayar').onChange(onResPreset);
+    fRes.add(params, 'resX', 4, MAX_RES, 1).name('Yatay piksel').onFinishChange(onResX);
+    fRes.add(params, 'resY', 4, MAX_RES, 1).name('Dikey piksel').onFinishChange(onResY);
+    fRes.add(params, 'pitch', 1, 100, 0.01).name('Piksel aralığı (mm)').onFinishChange(onPitch);
+    fRes.add(params, 'squarePixels').name('Kare piksel (oranı koru)').onChange(onSquare);
+
+    const fContent = gui.addFolder('Görsel / içerik');
+    fContent.add(params, 'source', Object.fromEntries(Object.entries(sourceNames).map(([k, v]) => [v, k])))
+      .name('Kaynak').onChange(() => {
+        if (params.source === 'upload' && !upload) {
+          params.source = 'test';
+          fileInput.click();
+        }
+        applyAll();
+      });
+    fContent.add({ pick: () => fileInput.click() }, 'pick').name('📁 Görsel / video yükle…');
+    fContent.add(params, 'url').name('Görsel/video URL');
+    fContent.add({
+      load: () => {
+        const u = params.url.trim();
+        if (!u) return toast('Önce bir URL girin.');
+        const name = u.split('/').pop().split('?')[0] || u;
+        if (/\.(mp4|webm|ogv|ogg|mov|m4v)(\?|#|$)/i.test(u)) loadVideo(u, name, true);
+        else loadImage(u, name, true);
+      },
+    }, 'load').name('🔗 URL\'den yükle');
+    fContent.add(params, 'fit', { 'Sığdır (kenar boşluklu)': 'contain', 'Doldur (kırp)': 'cover', 'Esnet': 'stretch' })
+      .name('Yerleşim').onChange(applyAll);
+    fContent.add(params, 'marqueeText').name('Kayan yazı metni');
+
+    const fLed = gui.addFolder('LED görünümü');
+    fLed.add(params, 'brightness', 0, 4, 0.05).name('Parlaklık');
+    fLed.add(params, 'fill', 0.15, 1, 0.01).name('LED doluluk oranı');
+    fLed.add(params, 'shape', { 'Yuvarlak (DIP)': 'round', 'Kare (SMD)': 'square' }).name('LED şekli');
+    fLed.add(params, 'ledMask').name('LED piksel yapısını göster');
+    fLed.add(params, 'viewAngle', 0, 1, 0.01).name('Görüş açısı kaybı');
+
+    const fScene = gui.addFolder('Sahne ve kamera');
+    fScene.add(params, 'night').name('Gece modu').onChange(applyLighting);
+    fScene.add(params, 'bloom').name('Işıma (bloom)').onChange(applyLighting);
+    fScene.add(views, 'street').name('📷 Cadde görünümü');
+    fScene.add(views, 'opposite').name('📷 Karşı kaldırım');
+    fScene.add(views, 'close').name('📷 Ekrana yakın');
+    fScene.add(views, 'detail').name('📷 LED detayı');
+
+    function refreshGui() {
+      gui.controllersRecursive().forEach((c) => c.updateDisplay());
+    }
+
+    // =====================================================================
+    // Döngü
+    // =====================================================================
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      composer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    syncPitch();
+    applyAll();
+    applyLighting();
+    views.street();
+
+    const clock = new THREE.Clock();
+    let frame = 0;
+    renderer.setAnimationLoop(() => {
+      const t = clock.getElapsedTime();
+      controls.update();
+
+      // Yakın plan LED detayında derinlik hassasiyeti için near düzlemini mesafeye göre ayarla
+      const dist = camera.position.distanceTo(screenCenter());
+      const near = THREE.MathUtils.clamp(dist * 0.02, 0.002, 0.3);
+      if (Math.abs(near - camera.near) / camera.near > 0.1) {
+        camera.near = near;
+        camera.updateProjectionMatrix();
+      }
+      sky.position.copy(camera.position);
+
+      updateContent(t);
+      updateLedUniforms();
+      composer.render();
+
+      if (frame++ % 15 === 0) {
+        camDistText = `${fmt(dist, dist < 10 ? 2 : 1)} m`;
+        const el = document.getElementById('camdist');
+        if (el) el.textContent = camDistText;
+      }
+    });
+
+    window.__led = { params, applyAll, applyLighting, views, gui }; // hata ayıklama / otomasyon için
+  </script>
+</body>
+</html>
