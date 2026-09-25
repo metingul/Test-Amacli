@@ -8,7 +8,7 @@
     html, body { margin: 0; height: 100%; overflow: hidden; background: #0b1020; font-family: system-ui, "Segoe UI", Roboto, Arial, sans-serif; }
     canvas { display: block; }
     #info {
-      position: fixed; top: 12px; left: 12px; max-width: 330px;
+      position: fixed; top: calc(12px + env(safe-area-inset-top, 0px)); left: 12px; max-width: 330px;
       background: rgba(12, 16, 26, 0.82); color: #e6e9ef; border-radius: 10px;
       padding: 12px 14px; font-size: 12.5px; line-height: 1.45;
       box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35); backdrop-filter: blur(6px);
@@ -20,7 +20,7 @@
     #info td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
     #info .warn { margin-top: 8px; color: #ffcc66; }
     #hint {
-      position: fixed; bottom: 10px; left: 12px; color: rgba(255, 255, 255, 0.75);
+      position: fixed; bottom: calc(10px + env(safe-area-inset-bottom, 0px)); left: 12px; color: rgba(255, 255, 255, 0.75);
       font-size: 12px; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8); pointer-events: none;
     }
     #toast {
@@ -36,7 +36,7 @@
     }
     #drop.show { display: flex; }
     @media (max-width: 700px) {
-      #info { max-width: 210px; font-size: 11px; padding: 8px 10px; }
+      #info { top: auto; bottom: calc(12px + env(safe-area-inset-bottom, 0px)); max-width: calc(100% - 48px); font-size: 11px; padding: 8px 10px; }
       #hint { display: none; }
     }
   </style>
@@ -869,7 +869,8 @@
       clock: 'Saat / karşılama',
       upload: 'Yüklenen görsel / video',
     };
-    const gui = new GUI({ title: 'LED Ekran Parametreleri', width: 330 });
+    const gui = new GUI({ title: 'LED Ekran Parametreleri', width: Math.min(330, window.innerWidth - 24) });
+    if (window.innerWidth < 700) gui.close(); // dar ekranda panel kapalı başlasın
 
     const fSize = gui.addFolder('Ekran boyutu ve konumu');
     fSize.add(params, 'width', 1, 22, 0.1).name('Genişlik (m)').onChange(onSize);
